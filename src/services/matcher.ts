@@ -37,9 +37,9 @@ export class MatcherService {
    * 检查文章是否匹配任何订阅
    */
   async checkPostMatches(post: Post): Promise<MatchResult[]> {
-    // 并发获取订阅和配置信息
+    // 并发获取仅启用的订阅和配置信息
     const [subscriptions, config] = await Promise.all([
-      this.dbService.getAllKeywordSubs(),
+      this.dbService.getActiveKeywordSubs(),
       this.dbService.getBaseConfig()
     ]);
     
@@ -229,11 +229,11 @@ export class MatcherService {
    * 处理未推送的文章 - 优化版本，减少重复查询和批量更新
    */
   async processUnpushedPosts(): Promise<PushResult> {
-    // 第一步：并发获取所有需要的数据
+    // 第一步：并发获取所有需要的数据（仅匹配已启用的订阅）
     const [config, unpushedPosts, subscriptions] = await Promise.all([
       this.dbService.getBaseConfig(),
       this.dbService.getUnpushedPosts(),
-      this.dbService.getAllKeywordSubs()
+      this.dbService.getActiveKeywordSubs()
     ]);
     
     if (!config) {

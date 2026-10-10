@@ -553,6 +553,41 @@ apiRoutes.post('/subscriptions', async (c) => {
   }
 })
 
+// 切换订阅启用/暂停状态
+apiRoutes.post('/subscriptions/:id/toggle', async (c) => {
+  try {
+    const id = parseInt(c.req.param('id'))
+    if (isNaN(id)) {
+      return c.json({
+        success: false,
+        message: '无效的订阅ID'
+      }, 400)
+    }
+
+    const dbService = c.get('dbService')
+    const subscription = await dbService.toggleKeywordSubActive(id)
+
+    if (!subscription) {
+      return c.json({
+        success: false,
+        message: '订阅不存在'
+      }, 404)
+    }
+
+    const statusText = subscription.is_active === 1 ? '已启用' : '已暂停'
+    return c.json({
+      success: true,
+      data: subscription,
+      message: `订阅 ${statusText}`
+    })
+  } catch (error) {
+    return c.json({
+      success: false,
+      message: `切换订阅状态失败: ${error}`
+    }, 500)
+  }
+})
+
 // 更新订阅
 apiRoutes.put('/subscriptions/:id', async (c) => {
   try {
@@ -565,7 +600,7 @@ apiRoutes.put('/subscriptions/:id', async (c) => {
     }
     
     const body = await c.req.json()
-    const { keyword1, keyword2, keyword3, creator, category } = body
+    const { keyword1, keyword2, keyword3, creator, category, is_active } = body
     
     const dbService = c.get('dbService')
     const subscription = await dbService.updateKeywordSub(id, {
@@ -573,7 +608,8 @@ apiRoutes.put('/subscriptions/:id', async (c) => {
       keyword2: keyword2 ? keyword2.trim() : undefined,
       keyword3: keyword3 ? keyword3.trim() : undefined,
       creator: creator ? creator.trim() : undefined,
-      category: category ? category.trim() : undefined
+      category: category ? category.trim() : undefined,
+      is_active: is_active !== undefined ? (is_active ? 1 : 0) : undefined
     })
     
     if (!subscription) {

@@ -612,14 +612,25 @@ function renderSubscriptions(subscriptions) {
     container.innerHTML = subscriptions.map(sub => {
         const keywords = [sub.keyword1, sub.keyword2, sub.keyword3].filter(k => k);
         const hasKeywords = keywords.length > 0;
+        const isActive = sub.is_active === undefined || sub.is_active === null ? true : Number(sub.is_active) === 1;
         
         return `
-            <div class="subscription-item">
+            <div class="subscription-item ${isActive ? '' : 'paused'}">
                 <div class="subscription-header">
-                    <h4 class="subscription-title">订阅 #${sub.id}</h4>
-                    <button class="subscription-delete-btn" onclick="deleteSubscription(${sub.id})">
-                        🗑️ 删除
-                    </button>
+                    <h4 class="subscription-title">
+                        订阅 #${sub.id}
+                        <span class="sub-status-badge ${isActive ? 'active' : 'paused'}">
+                            ${isActive ? '🟢 监控中' : '⏸️ 已暂停'}
+                        </span>
+                    </h4>
+                    <div class="subscription-actions">
+                        <button class="subscription-toggle-btn ${isActive ? 'btn-pause' : 'btn-resume'}" onclick="toggleSubscription(${sub.id})">
+                            ${isActive ? '⏸️ 暂停' : '▶️ 启用'}
+                        </button>
+                        <button class="subscription-delete-btn" onclick="deleteSubscription(${sub.id})">
+                            🗑️ 删除
+                        </button>
+                    </div>
                 </div>
                 ${hasKeywords ? `
                     <div class="keywords">
@@ -672,6 +683,23 @@ async function handleAddSubscription(e) {
     } catch (error) {
         console.error('添加订阅失败:', error);
         showMessage('添加订阅失败', 'error');
+    }
+}
+
+// 切换订阅状态（暂停/启用）
+async function toggleSubscription(id) {
+    try {
+        const response = await apiRequest(`/api/subscriptions/${id}/toggle`, 'POST');
+        if (response.success) {
+            showMessage(response.message || '订阅状态更新成功', 'success');
+            loadSubscriptions();
+            updateStatus();
+        } else {
+            showMessage(response.message || '更新订阅状态失败', 'error');
+        }
+    } catch (error) {
+        console.error('切换订阅状态失败:', error);
+        showMessage('切换订阅状态失败: ' + error.message, 'error');
     }
 }
 

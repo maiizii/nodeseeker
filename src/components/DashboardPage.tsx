@@ -56,6 +56,54 @@ export const DashboardPage: FC = () => {
           color: #333;
           font-size: 15px;
         }
+        .subscription-item.paused {
+          border-left: 3px solid #9e9e9e !important;
+          background: #fafafa;
+        }
+        .subscription-actions {
+          display: flex;
+          gap: 6px;
+          align-items: center;
+        }
+        .subscription-toggle-btn {
+          padding: 4px 8px;
+          font-size: 12px;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          white-space: nowrap;
+          transition: background-color 0.2s;
+        }
+        .subscription-toggle-btn.btn-pause {
+          background: #ff9800;
+          color: white;
+        }
+        .subscription-toggle-btn.btn-pause:hover {
+          background: #f57c00;
+        }
+        .subscription-toggle-btn.btn-resume {
+          background: #4caf50;
+          color: white;
+        }
+        .subscription-toggle-btn.btn-resume:hover {
+          background: #388e3c;
+        }
+        .sub-status-badge {
+          display: inline-block;
+          font-size: 11px;
+          padding: 2px 6px;
+          border-radius: 10px;
+          margin-left: 8px;
+          font-weight: normal;
+        }
+        .sub-status-badge.active {
+          background: #e8f5e9;
+          color: #2e7d32;
+        }
+        .sub-status-badge.paused {
+          background: #eeeeee;
+          color: #757575;
+        }
         .subscription-delete-btn {
           padding: 4px 8px;
           font-size: 12px;

@@ -33,6 +33,7 @@ export interface KeywordSub {
   keyword3?: string;
   creator?: string;
   category?: string;
+  is_active?: number; // 1 启用，0 暂停，默认为 1
   created_at?: string;
   updated_at?: string;
 }
@@ -188,6 +189,7 @@ export class DatabaseService {
           keyword3 TEXT DEFAULT NULL,
           creator TEXT NULL,
           category TEXT NULL,
+          is_active INTEGER DEFAULT 1,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
@@ -520,18 +522,33 @@ export class DatabaseService {
     ));
   }
 
+  // 确保字段存在的软升级机制
+  private schemaMigrated = false;
+  private async ensureSubSchema(): Promise<void> {
+    if (this.schemaMigrated) return;
+    try {
+      await this.db.prepare('ALTER TABLE keywords_sub ADD COLUMN is_active INTEGER DEFAULT 1').run();
+    } catch {
+      // 列已存在时 SQLite 会报错，忽略即可
+    }
+    this.schemaMigrated = true;
+  }
+
   // 关键词订阅相关操作
   async createKeywordSub(sub: Omit<KeywordSub, 'id' | 'created_at' | 'updated_at'>): Promise<KeywordSub> {
+    await this.ensureSubSchema();
+    const isActive = sub.is_active !== undefined ? sub.is_active : 1;
     const result = await this.db.prepare(`
-      INSERT INTO keywords_sub (keyword1, keyword2, keyword3, creator, category)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO keywords_sub (keyword1, keyword2, keyword3, creator, category, is_active)
+      VALUES (?, ?, ?, ?, ?, ?)
       RETURNING *
     `).bind(
       sub.keyword1 || null,
       sub.keyword2 || null,
       sub.keyword3 || null,
       sub.creator || null,
-      sub.category || null
+      sub.category || null,
+      isActive
     ).first();
 
     // 清理相关缓存
@@ -542,16 +559,26 @@ export class DatabaseService {
   }
 
   async getAllKeywordSubs(): Promise<KeywordSub[]> {
+    await this.ensureSubSchema();
     const cacheKey = this.getCacheKey('getAllKeywordSubs', []);
     const cached = this.getFromCache<KeywordSub[]>(cacheKey);
     if (cached !== null) return cached;
 
     const result = await this.db.prepare('SELECT * FROM keywords_sub ORDER BY created_at DESC').all();
-    const subscriptions = result.results as unknown as KeywordSub[];
+    const subscriptions = (result.results as unknown as KeywordSub[]).map(sub => ({
+      ...sub,
+      is_active: sub.is_active === undefined || sub.is_active === null ? 1 : Number(sub.is_active)
+    }));
     
     // 缓存60秒，因为订阅变化不频繁
     this.setCache(cacheKey, subscriptions, 60000);
     return subscriptions;
+  }
+
+  // 获取仅激活的关键词订阅
+  async getActiveKeywordSubs(): Promise<KeywordSub[]> {
+    const all = await this.getAllKeywordSubs();
+    return all.filter(sub => sub.is_active !== 0);
   }
 
   async deleteKeywordSub(id: number): Promise<boolean> {
@@ -564,7 +591,19 @@ export class DatabaseService {
     return result.meta.changes > 0;
   }
 
+  async toggleKeywordSubActive(id: number): Promise<KeywordSub | null> {
+    await this.ensureSubSchema();
+    const current = await this.getKeywordSubById(id);
+    if (!current) return null;
+
+    const currentActive = current.is_active === undefined || current.is_active === null ? 1 : Number(current.is_active);
+    const newActive = currentActive === 1 ? 0 : 1;
+
+    return await this.updateKeywordSub(id, { is_active: newActive });
+  }
+
   async updateKeywordSub(id: number, sub: Partial<Omit<KeywordSub, 'id' | 'created_at' | 'updated_at'>>): Promise<KeywordSub | null> {
+    await this.ensureSubSchema();
     const updates: string[] = [];
     const values: any[] = [];
 
@@ -588,6 +627,10 @@ export class DatabaseService {
       updates.push('category = ?');
       values.push(sub.category || null);
     }
+    if (sub.is_active !== undefined) {
+      updates.push('is_active = ?');
+      values.push(sub.is_active ? 1 : 0);
+    }
 
     if (updates.length === 0) {
       return this.getKeywordSubById(id);
@@ -603,12 +646,22 @@ export class DatabaseService {
       RETURNING *
     `).bind(...values).first();
 
+    // 清除相关缓存
+    this.clearCacheByPattern('KeywordSubs');
+    this.clearCacheByPattern('Subscriptions');
+
     return result as KeywordSub | null;
   }
 
   async getKeywordSubById(id: number): Promise<KeywordSub | null> {
+    await this.ensureSubSchema();
     const result = await this.db.prepare('SELECT * FROM keywords_sub WHERE id = ?').bind(id).first();
-    return result as KeywordSub | null;
+    if (!result) return null;
+    const sub = result as unknown as KeywordSub;
+    return {
+      ...sub,
+      is_active: sub.is_active === undefined || sub.is_active === null ? 1 : Number(sub.is_active)
+    };
   }
 
   // 数据库初始化检查
@@ -651,12 +704,14 @@ export class DatabaseService {
   }
 
   async getSubscriptionsCount(): Promise<number> {
+    await this.ensureSubSchema();
     const cacheKey = this.getCacheKey('getSubscriptionsCount', []);
     const cached = this.getFromCache<number>(cacheKey);
     if (cached !== null) return cached;
 
     const result = await this.db.prepare(`
       SELECT COUNT(*) as count FROM keywords_sub
+      WHERE is_active IS NULL OR is_active != 0
     `).first();
     const count = (result as any)?.count || 0;
     this.setCache(cacheKey, count, 60000); // 1分钟缓存（关键词变化较少）

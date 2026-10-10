@@ -408,7 +408,8 @@ export class TelegramService {
       const keywords = [sub.keyword1, sub.keyword2, sub.keyword3]
         .filter(k => k && k.trim().length > 0);
       
-      text += `${index + 1}. ID:${sub.id}\n`;
+      const statusMark = sub.is_active === 0 ? '⏸️ [已暂停]' : '▶️ [运行中]';
+      text += `${index + 1}. ID:${sub.id} ${statusMark}\n`;
       
       if (keywords.length > 0) {
         text += `🔍 ${keywords.join(' + ')}\n`;
