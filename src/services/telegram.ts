@@ -63,6 +63,7 @@ export class TelegramService {
       'life': '🏠',
       'dev': '⚡',
       'photo': '📷',
+      'photo-share': '📷',
       'expose': '🚨',
       'sandbox': '🏖️'
     };
@@ -81,6 +82,7 @@ export class TelegramService {
       'life': '生活',
       'dev': 'Dev',
       'photo': '贴图',
+      'photo-share': '贴图',
       'expose': '曝光',
       'sandbox': '沙盒'
     };
@@ -204,15 +206,33 @@ export class TelegramService {
   }
 
   /**
-   * 发送消息到 Telegram
+   * HTML 特殊字符转义
    */
-  async sendMessage(chatId: string | number, text: string): Promise<boolean> {
+  private escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  /**
+   * 发送消息到 Telegram（支持 HTML/Markdown，失败自动降级为纯文本）
+   */
+  async sendMessage(chatId: string | number, text: string, parseMode: 'HTML' | 'Markdown' = 'Markdown'): Promise<boolean> {
     try {
-      await this.bot.api.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+      await this.bot.api.sendMessage(chatId, text, { parse_mode: parseMode });
       return true;
     } catch (error) {
-      console.error('发送 Telegram 消息时出错:', error);
-      return false;
+      console.warn(`[Telegram] 使用 ${parseMode} 发送失败，尝试降级为纯文本发送:`, error);
+      try {
+        // 剥离 HTML 标签进行纯文本重试
+        const plainText = text.replace(/<[^>]+>/g, '');
+        await this.bot.api.sendMessage(chatId, plainText);
+        return true;
+      } catch (fallbackError) {
+        console.error('发送 Telegram 纯文本消息依然失败:', fallbackError);
+        return false;
+      }
     }
   }
 
@@ -598,33 +618,27 @@ ${userBindingStatus}
         return false;
       }
 
-      // 构建关键词字符串，用markdown格式的标签包裹
+      // 构建关键词字符串
       const keywords = [matchedSub.keyword1, matchedSub.keyword2, matchedSub.keyword3]
         .filter(k => k && k.trim().length > 0)
         .join(' ');
 
       const keywordsStr = keywords ? `🎯 ${keywords}` : '';
-
       const creator = matchedSub.creator ? `👤 ${matchedSub.creator}` : '';
       const category = matchedSub.category ? `🗂️ ${this.getCategoryName(matchedSub.category)}` : '';
 
       // 构建帖子链接
       const postUrl = `https://www.nodeseek.com/post-${post.post_id}-1`;
 
-      // 去除 post.title 会影响markdown链接的符号
-      const title = post.title
-        .replace(/\[/g, "「")
-        .replace(/\]/g, "」")
-        .replace(/\(/g, "（")
-        .replace(/\)/g, "）");
+      // 使用 HTML 格式，安全转义所有动态文本，彻底解决 Markdown 特殊符号（如 _ * [ 等）导致 400 失败的问题
+      const metaParts = [keywordsStr, creator, category].filter(Boolean).map(item => this.escapeHtml(item)).join(' ');
+      const escapedTitle = this.escapeHtml(post.title);
 
-      const text = `
-**${keywordsStr} ${creator} ${category}**
+      const text = `<b>${metaParts}</b>
 
-**[${title}](${postUrl})**
-      `;
+<a href="${postUrl}"><b>${escapedTitle}</b></a>`;
 
-      const success = await this.sendMessage(config.chat_id, text);
+      const success = await this.sendMessage(config.chat_id, text, 'HTML');
       
       if (success) {
         // 更新推送状态

@@ -65,25 +65,17 @@ export default {
 
   // 定时任务处理器
   async scheduled(event: ScheduledEvent, env: Bindings, ctx: ExecutionContext): Promise<void> {
-    const cronExpression = event.cron.trim();
+    const cronExpression = event.cron?.trim() || '';
     console.log(`开始执行定时任务，cron: ${cronExpression}`)
 
     try {
       const dbService = new DatabaseService(env.DB)
-      
-      // 判断是否为数据清理任务（每小时执行）
-      if (cronExpression === '0 * * * *') {
-        console.log('执行数据清理任务...')
-        const cleanupResult = await dbService.cleanupOldPosts()
-        console.log(`数据清理完成: 删除了 ${cleanupResult.deletedCount} 条过期记录`)
-        return
-      }
 
-      // RSS抓取和推送任务（每分钟执行）
+      // RSS抓取和推送任务
       const config = await dbService.getBaseConfig()
 
       if (!config || !config.bot_token) {
-        console.log('系统未配置，跳过RSS抓取任务')
+        console.log('系统未配置或未设置 Bot Token，跳过RSS抓取任务')
         return
       }
 
@@ -93,14 +85,34 @@ export default {
 
       // 1. 抓取新的RSS数据
       console.log('开始抓取RSS数据...')
-      const rssResult = await rssService.processNewRSSData()
-      console.log(`RSS抓取完成: 新增 ${rssResult.new} 篇文章`)
+      let newPostsCount = 0
+      try {
+        const rssResult = await rssService.processNewRSSData()
+        newPostsCount = rssResult.new
+        console.log(`RSS抓取完成: 新增 ${newPostsCount} 篇文章`)
+      } catch (rssError) {
+        console.error('抓取 RSS 出现异常:', rssError)
+      }
 
-      // 2. 处理未推送的文章
-      if (rssResult.new > 0) {
-        console.log('开始处理推送...')
+      // 2. 检查并处理未推送的文章（无论本次是否有新文章，都检查未推送队列）
+      try {
+        console.log('开始检查未推送文章队列...')
         const pushResult = await matcherService.processUnpushedPosts()
-        console.log(`推送完成: 推送 ${pushResult.pushed} 篇文章`)
+        console.log(`推送完成: 推送 ${pushResult.pushed} 篇，跳过 ${pushResult.skipped} 篇，错误 ${pushResult.errors} 篇`)
+      } catch (pushError) {
+        console.error('处理文章推送出现异常:', pushError)
+      }
+
+      // 3. 数据清理（整点或特定 cron 执行）
+      const isHourly = cronExpression === '0 * * * *' || new Date().getUTCMinutes() === 0;
+      if (isHourly) {
+        try {
+          console.log('执行数据清理任务...')
+          const cleanupResult = await dbService.cleanupOldPosts()
+          console.log(`数据清理完成: 删除了 ${cleanupResult.deletedCount} 条过期记录`)
+        } catch (cleanupError) {
+          console.error('清理过期数据出现异常:', cleanupError)
+        }
       }
 
     } catch (error) {

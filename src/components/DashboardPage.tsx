@@ -531,6 +531,9 @@ export const DashboardPage: FC = () => {
               <div style="background: #f8f9fa; padding: 24px; border-radius: 8px; border-left: 4px solid #607d8b;" class="config-section">
                 <h3 style="font-size: 16px; margin-bottom: 16px; color: #333;">🔧 测试工具</h3>
                 <div style="display: flex; gap: 12px; flex-wrap: wrap;" class="test-buttons">
+                  <button id="syncPushBtn" style="padding: 12px 24px; background: #4caf50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">
+                    ⚡ 立即抓取并推送
+                  </button>
                   <button id="testBotBtn" style="padding: 12px 24px; background: #2196f3; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">
                     🔍 测试 Bot 连接
                   </button>

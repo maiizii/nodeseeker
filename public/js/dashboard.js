@@ -103,6 +103,12 @@ function initEventListeners() {
     // 推送设置表单
     document.getElementById('pushSettingsForm').addEventListener('submit', handlePushSettingsSubmit);
     
+    // 立即抓取并推送
+    const syncPushBtn = document.getElementById('syncPushBtn');
+    if (syncPushBtn) {
+        syncPushBtn.addEventListener('click', syncAndPush);
+    }
+    
     // 测试 Bot 连接
     document.getElementById('testBotBtn').addEventListener('click', testBotConnection);
     
@@ -912,6 +918,34 @@ async function loadMorePosts() {
     
     try {
         await loadPosts(false);
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+
+// 立即执行抓取与推送
+async function syncAndPush() {
+    const btn = document.getElementById('syncPushBtn');
+    if (!btn) return;
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '<span class="btn-icon">⏳</span>抓取与推送中...';
+    btn.disabled = true;
+
+    try {
+        const response = await apiRequest('/api/rss/update', 'POST');
+        if (response.success) {
+            showMessage(response.message || '抓取与推送成功', 'success');
+            await updateStatus();
+            if (document.getElementById('postsList')) {
+                loadPosts(true);
+            }
+        } else {
+            showMessage(response.message || '抓取与推送失败', 'error');
+        }
+    } catch (error) {
+        console.error('立即抓取与推送失败:', error);
+        showMessage('立即抓取与推送失败: ' + error.message, 'error');
     } finally {
         btn.innerHTML = originalText;
         btn.disabled = false;

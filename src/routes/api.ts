@@ -673,19 +673,36 @@ apiRoutes.get('/posts', async (c) => {
   }
 })
 
-// 手动更新RSS
+// 手动更新RSS并执行匹配推送
 apiRoutes.post('/rss/update', async (c) => {
   try {
     const dbService = c.get('dbService')
+    const config = await dbService.getBaseConfig()
     const rssService = new RSSService(dbService)
     
-    const result = await rssService.manualUpdate()
+    // 1. 抓取 RSS
+    const rssResult = await rssService.processNewRSSData()
     
-    return c.json(result)
+    // 2. 如果配置了 Bot Token，执行未推送文章处理
+    let pushResult = null
+    if (config && config.bot_token) {
+      const telegramService = new TelegramService(dbService, config.bot_token)
+      const matcherService = new MatcherService(dbService, telegramService)
+      pushResult = await matcherService.processUnpushedPosts()
+    }
+    
+    return c.json({
+      success: true,
+      message: `RSS 抓取成功（新增 ${rssResult.new} 篇）${pushResult ? `，已推送 ${pushResult.pushed} 篇` : ''}`,
+      data: {
+        rss: rssResult,
+        push: pushResult
+      }
+    })
   } catch (error) {
     return c.json({
       success: false,
-      message: `RSS更新失败: ${error}`
+      message: `RSS更新与推送失败: ${error}`
     }, 500)
   }
 })
