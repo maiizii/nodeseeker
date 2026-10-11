@@ -1,4 +1,4 @@
-import { DatabaseService, Post } from './database';
+import { DatabaseService, Post, KeywordSub } from './database';
 
 export interface RSSItem {
   title: string;
@@ -202,6 +202,51 @@ export class RSSService {
   }
 
   /**
+   * 内存级快速判断文章是否匹配任意激活订阅（减少不匹配文章的二次 UPDATE 写入）
+   */
+  private isPostMatched(post: ParsedPost, subscriptions: KeywordSub[], onlyTitle: boolean): boolean {
+    if (!subscriptions || subscriptions.length === 0) return false;
+
+    const titleText = post.title.toLowerCase();
+    const contentText = post.memo.toLowerCase();
+    const creatorText = post.creator.toLowerCase();
+    const categoryText = post.category.toLowerCase();
+
+    for (const sub of subscriptions) {
+      const keywords = [sub.keyword1, sub.keyword2, sub.keyword3].filter(k => k && k.trim().length > 0);
+      if (keywords.length === 0 && !sub.creator && !sub.category) continue;
+
+      if (sub.creator && sub.creator.trim().length > 0) {
+        if (!creatorText.includes(sub.creator.toLowerCase().trim())) continue;
+      }
+
+      if (sub.category && sub.category.trim().length > 0) {
+        const targetCategory = sub.category.toLowerCase().trim();
+        const isPhotoMatch = (targetCategory === 'photo' || targetCategory === 'photo-share') &&
+          (categoryText.includes('photo') || categoryText.includes('photo-share'));
+        if (!isPhotoMatch && !categoryText.includes(targetCategory)) continue;
+      }
+
+      let matchedCount = 0;
+      for (const kw of keywords) {
+        const lowerKw = kw!.toLowerCase().trim();
+        const kwMatched =
+          titleText.includes(lowerKw) ||
+          (!onlyTitle && contentText.includes(lowerKw)) ||
+          (!sub.creator && creatorText.includes(lowerKw)) ||
+          (!sub.category && categoryText.includes(lowerKw));
+        if (kwMatched) matchedCount++;
+      }
+
+      if (matchedCount === keywords.length) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
    * 处理新的 RSS 数据 - 优化版本，批量查询减少数据库访问
    */
   async processNewRSSData(): Promise<{ processed: number; new: number; errors: number }> {
@@ -248,13 +293,21 @@ export class RSSService {
         return true;
       });
 
-      // 第四步：批量创建新文章
+      // 第四步：批量创建新文章（入库前直接在内存中预判是否匹配订阅，不匹配的直接标记为 push_status=2，省去后续 UPDATE 写入）
       if (newPostsToCreate.length > 0) {
         try {
-          const postsWithDefaults = newPostsToCreate.map(post => ({
-            ...post,
-            push_status: 0 // 默认未推送
-          }));
+          const [config, activeSubs] = await Promise.all([
+            this.dbService.getBaseConfig(),
+            this.dbService.getActiveKeywordSubs()
+          ]);
+
+          const postsWithDefaults = newPostsToCreate.map(post => {
+            const isMatched = config ? this.isPostMatched(post, activeSubs, config.only_title === 1) : false;
+            return {
+              ...post,
+              push_status: isMatched ? 0 : 2 // 0 待推送，2 无需推送（一步到位，省掉一次 UPDATE 写入）
+            };
+          });
 
           const createdCount = await this.dbService.batchCreatePosts(postsWithDefaults);
           newPosts = createdCount;

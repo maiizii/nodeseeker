@@ -53,7 +53,7 @@ export class MatcherService {
   /**
    * 检查文章是否匹配任何订阅 - 带缓存数据版本
    */
-  private checkPostMatchesWithData(post: Post, subscriptions: KeywordSub[], config: BaseConfig): MatchResult[] {
+  public checkPostMatchesWithData(post: Pick<Post, 'title' | 'memo' | 'creator' | 'category'>, subscriptions: KeywordSub[], config: BaseConfig): MatchResult[] {
     const results: MatchResult[] = [];
 
     // 预处理文章内容以提高匹配性能
@@ -78,7 +78,7 @@ export class MatcherService {
   /**
    * 匹配单个文章与单个订阅
    */
-  private matchPostWithSubscription(post: Post & {
+  private matchPostWithSubscription(post: Pick<Post, 'title' | 'memo' | 'creator' | 'category'> & {
     titleLower?: string;
     memoLower?: string;
     creatorLower?: string;
@@ -229,10 +229,20 @@ export class MatcherService {
    * 处理未推送的文章 - 优化版本，减少重复查询和批量更新
    */
   async processUnpushedPosts(): Promise<PushResult> {
-    // 第一步：并发获取所有需要的数据（仅匹配已启用的订阅）
-    const [config, unpushedPosts, subscriptions] = await Promise.all([
+    // 先检查是否有待推送文章（利用内存标记，无待推送文章时 0 次数据库查询直接返回）
+    const unpushedPosts = await this.dbService.getUnpushedPosts();
+    if (unpushedPosts.length === 0) {
+      return {
+        processed: 0,
+        pushed: 0,
+        skipped: 0,
+        errors: 0,
+        details: []
+      };
+    }
+
+    const [config, subscriptions] = await Promise.all([
       this.dbService.getBaseConfig(),
-      this.dbService.getUnpushedPosts(),
       this.dbService.getActiveKeywordSubs()
     ]);
     
@@ -361,8 +371,12 @@ export class MatcherService {
         console.log(`批量更新完成: ${batchUpdates.length} 条记录`);
       } catch (error) {
         console.error('批量更新状态失败:', error);
-        // 这里可以选择是否要回退统计结果
       }
+    }
+
+    // 如果本轮全部处理完毕且无错误，标记内存无待推送队列
+    if (result.errors === 0 && unpushedPosts.length < 50) {
+      this.dbService.setHasUnpushed(false);
     }
 
     console.log(`推送处理完成: 处理 ${result.processed} 篇，推送 ${result.pushed} 篇，跳过 ${result.skipped} 篇，错误 ${result.errors} 篇`);

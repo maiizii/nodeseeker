@@ -38,12 +38,27 @@ export interface KeywordSub {
   updated_at?: string;
 }
 
+// 模块级跨请求共享缓存，避免每次实例化 DatabaseService 时丢失缓存导致频繁读取 D1
+const globalQueryCache = new Map<string, { data: any; timestamp: number; ttl: number }>();
+const globalKnownPostIds = new Set<number>();
+let globalTablesChecked = false;
+let globalSubSchemaMigrated = false;
+let globalHasUnpushed = true;
+
+function addKnownPostId(postId: number) {
+  globalKnownPostIds.add(postId);
+  if (globalKnownPostIds.size > 500) {
+    const first = globalKnownPostIds.values().next().value;
+    if (first !== undefined) globalKnownPostIds.delete(first);
+  }
+}
+
 export class DatabaseService {
   private queryCache: Map<string, { data: any; timestamp: number; ttl: number }>;
   private readonly CACHE_TTL = 60000; // 1分钟缓存
 
   constructor(private db: D1Database) {
-    this.queryCache = new Map();
+    this.queryCache = globalQueryCache;
   }
 
   // 缓存助手方法
@@ -77,9 +92,10 @@ export class DatabaseService {
   }
 
   /**
-   * 检查数据库表是否存在
+   * 检查数据库表是否存在（加内存级单例防刷）
    */
   private async checkTablesExist(): Promise<boolean> {
+    if (globalTablesChecked) return true;
     try {
       // 检查主要表是否存在
       const tables = ['base_config', 'posts', 'keywords_sub'];
@@ -95,6 +111,7 @@ export class DatabaseService {
         }
       }
       
+      globalTablesChecked = true;
       return true;
     } catch (error) {
       console.error('检查数据库表存在性失败:', error);
@@ -360,9 +377,20 @@ export class DatabaseService {
 
     const results = await this.db.batch(statements);
     
+    // 记录已创建的 post_id 到内存集合，并检查是否有待推送文章
+    posts.forEach((post, idx) => {
+      if (results[idx]?.success) {
+        addKnownPostId(post.post_id);
+        if (post.push_status === 0) {
+          globalHasUnpushed = true;
+        }
+      }
+    });
+
     // 清除相关缓存
     this.clearCacheByPattern('posts');
     this.clearCacheByPattern('Stats');
+    this.clearCacheByPattern('Today');
     
     // 统计成功插入的数量
     return results.filter(result => result.success).length;
@@ -374,23 +402,37 @@ export class DatabaseService {
   }
 
   /**
-   * 批量查询文章，根据 post_id 数组
+   * 批量查询文章是否存在，优先命中内存集合以大幅节省 D1 读取行数
    */
   async getPostsByPostIds(postIds: number[]): Promise<Map<number, Post>> {
+    const postMap = new Map<number, Post>();
     if (postIds.length === 0) {
-      return new Map();
+      return postMap;
     }
 
-    // 构建 IN 查询的占位符
-    const placeholders = postIds.map(() => '?').join(',');
-    const query = `SELECT * FROM posts WHERE post_id IN (${placeholders})`;
+    const unknownIds: number[] = [];
+    for (const id of postIds) {
+      if (globalKnownPostIds.has(id)) {
+        postMap.set(id, { post_id: id } as Post);
+      } else {
+        unknownIds.push(id);
+      }
+    }
+
+    // 如果全部在内存已知集合中，0 次数据库查询直接返回
+    if (unknownIds.length === 0) {
+      return postMap;
+    }
+
+    // 仅查询未知 ID，且只查 post_id 字段减少 I/O
+    const placeholders = unknownIds.map(() => '?').join(',');
+    const query = `SELECT post_id FROM posts WHERE post_id IN (${placeholders})`;
     
-    const result = await this.db.prepare(query).bind(...postIds).all();
+    const result = await this.db.prepare(query).bind(...unknownIds).all();
     
-    // 将结果转换为 Map，以 post_id 为键
-    const postMap = new Map<number, Post>();
-    (result.results as unknown as Post[]).forEach(post => {
-      postMap.set(post.post_id, post);
+    (result.results as unknown as Array<{ post_id: number }>).forEach(row => {
+      addKnownPostId(row.post_id);
+      postMap.set(row.post_id, { post_id: row.post_id } as Post);
     });
     
     return postMap;
@@ -414,14 +456,27 @@ export class DatabaseService {
     return result.results as unknown as Post[];
   }
 
+  setHasUnpushed(has: boolean) {
+    globalHasUnpushed = has;
+  }
+
   async getUnpushedPosts(): Promise<Post[]> {
+    if (!globalHasUnpushed) {
+      return [];
+    }
+
     const result = await this.db.prepare(`
       SELECT * FROM posts 
       WHERE push_status = 0 
       ORDER BY pub_date ASC
+      LIMIT 50
     `).all();
     
-    return result.results as unknown as Post[];
+    const posts = result.results as unknown as Post[];
+    if (posts.length === 0) {
+      globalHasUnpushed = false;
+    }
+    return posts;
   }
 
   // 新增：带分页的文章查询
@@ -522,16 +577,15 @@ export class DatabaseService {
     ));
   }
 
-  // 确保字段存在的软升级机制
-  private schemaMigrated = false;
+  // 确保字段存在的零开销软升级机制（全局仅在必要时运行一次）
   private async ensureSubSchema(): Promise<void> {
-    if (this.schemaMigrated) return;
+    if (globalSubSchemaMigrated) return;
     try {
       await this.db.prepare('ALTER TABLE keywords_sub ADD COLUMN is_active INTEGER DEFAULT 1').run();
     } catch {
       // 列已存在时 SQLite 会报错，忽略即可
     }
-    this.schemaMigrated = true;
+    globalSubSchemaMigrated = true;
   }
 
   // 关键词订阅相关操作
@@ -559,13 +613,19 @@ export class DatabaseService {
   }
 
   async getAllKeywordSubs(): Promise<KeywordSub[]> {
-    await this.ensureSubSchema();
     const cacheKey = this.getCacheKey('getAllKeywordSubs', []);
     const cached = this.getFromCache<KeywordSub[]>(cacheKey);
     if (cached !== null) return cached;
 
     const result = await this.db.prepare('SELECT * FROM keywords_sub ORDER BY created_at DESC').all();
-    const subscriptions = (result.results as unknown as KeywordSub[]).map(sub => ({
+    const rawResults = (result.results as unknown as KeywordSub[]) || [];
+    if (rawResults.length > 0 && 'is_active' in rawResults[0]) {
+      globalSubSchemaMigrated = true;
+    } else if (!globalSubSchemaMigrated) {
+      await this.ensureSubSchema();
+    }
+
+    const subscriptions = rawResults.map(sub => ({
       ...sub,
       is_active: sub.is_active === undefined || sub.is_active === null ? 1 : Number(sub.is_active)
     }));
@@ -704,18 +764,8 @@ export class DatabaseService {
   }
 
   async getSubscriptionsCount(): Promise<number> {
-    await this.ensureSubSchema();
-    const cacheKey = this.getCacheKey('getSubscriptionsCount', []);
-    const cached = this.getFromCache<number>(cacheKey);
-    if (cached !== null) return cached;
-
-    const result = await this.db.prepare(`
-      SELECT COUNT(*) as count FROM keywords_sub
-      WHERE is_active IS NULL OR is_active != 0
-    `).first();
-    const count = (result as any)?.count || 0;
-    this.setCache(cacheKey, count, 60000); // 1分钟缓存（关键词变化较少）
-    return count;
+    const activeSubs = await this.getActiveKeywordSubs();
+    return activeSubs.length;
   }
 
   async getTodayPostsCount(): Promise<number> {
